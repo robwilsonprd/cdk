@@ -9,6 +9,17 @@ use crate::nuts::{
 use crate::types::ProofInfo;
 use crate::{Amount, Error, Wallet};
 
+fn calculate_change_amount(
+    proofs_total: Amount,
+    amount: Option<Amount>,
+    fee: Amount,
+) -> Result<Amount, Error> {
+    let required = amount.unwrap_or(Amount::ZERO) + fee;
+    proofs_total
+        .checked_sub(required)
+        .ok_or(Error::InsufficientFunds)
+}
+
 impl Wallet {
     /// Swap
     #[instrument(skip(self, input_proofs))]
@@ -198,7 +209,7 @@ impl Wallet {
 
         let fee = self.get_proofs_fee(&proofs).await?;
 
-        let change_amount: Amount = proofs_total - amount.unwrap_or(Amount::ZERO) - fee;
+        let change_amount = calculate_change_amount(proofs_total, amount, fee)?;
 
         let (send_amount, change_amount) = match include_fees {
             true => {
@@ -214,7 +225,9 @@ impl Wallet {
 
                 (
                     amount.map(|a| a + fee_to_redeem),
-                    change_amount - fee_to_redeem,
+                    change_amount
+                        .checked_sub(fee_to_redeem)
+                        .ok_or(Error::InsufficientFunds)?,
                 )
             }
             false => (amount, change_amount),
@@ -296,5 +309,26 @@ impl Wallet {
             derived_secret_count: derived_secret_count as u32,
             fee,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn change_amount_errors_on_insufficient_funds() {
+        let proofs_total = Amount::from(5u64);
+        let res = calculate_change_amount(proofs_total, Some(Amount::from(10u64)), Amount::ZERO);
+        assert!(matches!(res, Err(Error::InsufficientFunds)));
+    }
+
+    #[test]
+    fn change_amount_computes_correctly() {
+        let proofs_total = Amount::from(10u64);
+        let change =
+            calculate_change_amount(proofs_total, Some(Amount::from(4u64)), Amount::from(1u64))
+                .unwrap();
+        assert_eq!(change, Amount::from(5u64));
     }
 }
